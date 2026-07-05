@@ -573,15 +573,27 @@ K_TIMER_DEFINE(automouse_layer_timer, deactivate_automouse_layer, NULL);
 
 
 /*
- * Special handling for roBa layer 9 Alt-Tab gesture.
+ * Special handling for roBa layer 9 Windows task switcher gesture.
  *
- * Normal ball actions tap and release the configured binding immediately.
- * Windows Alt+Tab needs Alt to stay pressed while Tab / Shift+Tab is repeated,
- * then Alt must be released to confirm the selected window.
+ * This implementation does NOT hold Alt.
+ *
+ * Windows keeps the task switcher open when Ctrl+Alt+Tab is tapped.
+ * After that, Tab / Shift+Tab can move the selection and Enter confirms it.
+ *
+ * Layer 9 behavior:
+ *   Up / Right: open task switcher, then move to next item
+ *   Left:       open task switcher, then move to previous item
+ *   Down:       Enter, confirm selected item
  */
 #define ROBA_ALT_TAB_LAYER 9
 
-static bool roba_alt_tab_active = false;
+static bool roba_task_switcher_active = false;
+
+static const struct zmk_behavior_binding roba_kp_left_ctrl = {
+    .behavior_dev = "KEY_PRESS",
+    .param1 = LEFT_CONTROL,
+    .param2 = 0,
+};
 
 static const struct zmk_behavior_binding roba_kp_left_alt = {
     .behavior_dev = "KEY_PRESS",
@@ -601,6 +613,12 @@ static const struct zmk_behavior_binding roba_kp_tab = {
     .param2 = 0,
 };
 
+static const struct zmk_behavior_binding roba_kp_enter = {
+    .behavior_dev = "KEY_PRESS",
+    .param1 = ENTER,
+    .param2 = 0,
+};
+
 static void roba_tap_binding(struct zmk_behavior_binding_event *event,
                              struct zmk_behavior_binding binding,
                              int32_t tap_ms, int32_t wait_ms) {
@@ -608,40 +626,68 @@ static void roba_tap_binding(struct zmk_behavior_binding_event *event,
     zmk_behavior_queue_add(event, binding, false, wait_ms);
 }
 
-static void roba_alt_tab_press_alt_if_needed(struct zmk_behavior_binding_event *event,
-                                             int32_t tap_ms) {
-    if (!roba_alt_tab_active) {
-        zmk_behavior_queue_add(event, roba_kp_left_alt, true, tap_ms);
-        roba_alt_tab_active = true;
+static void roba_open_task_switcher(struct zmk_behavior_binding_event *event,
+                                    int32_t tap_ms, int32_t wait_ms) {
+    zmk_behavior_queue_add(event, roba_kp_left_ctrl, true, tap_ms);
+    zmk_behavior_queue_add(event, roba_kp_left_alt, true, tap_ms);
+    roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
+    zmk_behavior_queue_add(event, roba_kp_left_alt, false, wait_ms);
+    zmk_behavior_queue_add(event, roba_kp_left_ctrl, false, wait_ms);
+
+    roba_task_switcher_active = true;
+}
+
+static void roba_move_task_switcher_next(struct zmk_behavior_binding_event *event,
+                                         int32_t tap_ms, int32_t wait_ms) {
+    if (!roba_task_switcher_active) {
+        roba_open_task_switcher(event, tap_ms, wait_ms);
+    } else {
+        roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
     }
 }
 
-static void roba_alt_tab_release_alt_if_needed(struct zmk_behavior_binding_event *event,
-                                               int32_t wait_ms) {
-    if (roba_alt_tab_active) {
-        zmk_behavior_queue_add(event, roba_kp_left_alt, false, wait_ms);
-        roba_alt_tab_active = false;
+static void roba_move_task_switcher_previous(struct zmk_behavior_binding_event *event,
+                                             int32_t tap_ms, int32_t wait_ms) {
+    if (!roba_task_switcher_active) {
+        roba_open_task_switcher(event, tap_ms, wait_ms);
     }
+
+    zmk_behavior_queue_add(event, roba_kp_left_shift, true, tap_ms);
+    roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
+    zmk_behavior_queue_add(event, roba_kp_left_shift, false, wait_ms);
+}
+
+static void roba_confirm_task_switcher(struct zmk_behavior_binding_event *event,
+                                       int32_t tap_ms, int32_t wait_ms) {
+    if (roba_task_switcher_active) {
+        roba_tap_binding(event, roba_kp_enter, tap_ms, wait_ms);
+        roba_task_switcher_active = false;
+    }
+}
+
+static void roba_task_switcher_reset_if_needed(struct zmk_behavior_binding_event *event,
+                                               int32_t wait_ms) {
+    /*
+     * This version does not hold Ctrl or Alt, so there is nothing to release.
+     * Keep this helper so non-layer-9 actions can clear the internal state.
+     */
+    roba_task_switcher_active = false;
 }
 
 static void roba_invoke_alt_tab_gesture(struct zmk_behavior_binding_event *event,
                                         int idx, int32_t tap_ms, int32_t wait_ms) {
     switch (idx) {
     case 0: // Right: next app
-    case 2: // Up: start Alt+Tab / next app
-        roba_alt_tab_press_alt_if_needed(event, tap_ms);
-        roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
+    case 2: // Up: open / next app
+        roba_move_task_switcher_next(event, tap_ms, wait_ms);
         break;
 
     case 1: // Left: previous app
-        roba_alt_tab_press_alt_if_needed(event, tap_ms);
-        zmk_behavior_queue_add(event, roba_kp_left_shift, true, tap_ms);
-        roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
-        zmk_behavior_queue_add(event, roba_kp_left_shift, false, wait_ms);
+        roba_move_task_switcher_previous(event, tap_ms, wait_ms);
         break;
 
-    case 3: // Down: release Alt and confirm selection
-        roba_alt_tab_release_alt_if_needed(event, wait_ms);
+    case 3: // Down: confirm
+        roba_confirm_task_switcher(event, tap_ms, wait_ms);
         break;
     }
 }
@@ -868,7 +914,7 @@ static int pmw3610_report_data(const struct device *dev) {
                          * Safety: if the layer was changed while Alt-Tab was active,
                          * release Alt before running any other ball action.
                          */
-                        roba_alt_tab_release_alt_if_needed(&event, action_cfg.wait_ms);
+                        roba_task_switcher_reset_if_needed(&event, action_cfg.wait_ms);
 
                         zmk_behavior_queue_add(&event, action_cfg.bindings[idx], true, action_cfg.tap_ms);
                         zmk_behavior_queue_add(&event, action_cfg.bindings[idx], false, action_cfg.wait_ms);
@@ -1038,4 +1084,3 @@ DT_INST_FOREACH_CHILD(0, BALL_ACTIONS_INST)
     DEVICE_DT_INST_DEFINE(n, pmw3610_init, NULL, &data##n, &config##n, POST_KERNEL,                \
                           CONFIG_SENSOR_INIT_PRIORITY, NULL);
 
-DT_INST_FOREACH_STATUS_OKAY(PMW3610_DEFINE)
