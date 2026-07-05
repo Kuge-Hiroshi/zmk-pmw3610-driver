@@ -571,6 +571,81 @@ static void deactivate_automouse_layer(struct k_timer *timer) {
 K_TIMER_DEFINE(automouse_layer_timer, deactivate_automouse_layer, NULL);
 #endif
 
+
+/*
+ * Special handling for roBa layer 9 Alt-Tab gesture.
+ *
+ * Normal ball actions tap and release the configured binding immediately.
+ * Windows Alt+Tab needs Alt to stay pressed while Tab / Shift+Tab is repeated,
+ * then Alt must be released to confirm the selected window.
+ */
+#define ROBA_ALT_TAB_LAYER 9
+
+static bool roba_alt_tab_active = false;
+
+static const struct zmk_behavior_binding roba_kp_left_alt = {
+    .behavior_dev = "KEY_PRESS",
+    .param1 = LEFT_ALT,
+    .param2 = 0,
+};
+
+static const struct zmk_behavior_binding roba_kp_left_shift = {
+    .behavior_dev = "KEY_PRESS",
+    .param1 = LEFT_SHIFT,
+    .param2 = 0,
+};
+
+static const struct zmk_behavior_binding roba_kp_tab = {
+    .behavior_dev = "KEY_PRESS",
+    .param1 = TAB,
+    .param2 = 0,
+};
+
+static void roba_tap_binding(struct zmk_behavior_binding_event *event,
+                             struct zmk_behavior_binding binding,
+                             int32_t tap_ms, int32_t wait_ms) {
+    zmk_behavior_queue_add(event, binding, true, tap_ms);
+    zmk_behavior_queue_add(event, binding, false, wait_ms);
+}
+
+static void roba_alt_tab_press_alt_if_needed(struct zmk_behavior_binding_event *event,
+                                             int32_t tap_ms) {
+    if (!roba_alt_tab_active) {
+        zmk_behavior_queue_add(event, roba_kp_left_alt, true, tap_ms);
+        roba_alt_tab_active = true;
+    }
+}
+
+static void roba_alt_tab_release_alt_if_needed(struct zmk_behavior_binding_event *event,
+                                               int32_t wait_ms) {
+    if (roba_alt_tab_active) {
+        zmk_behavior_queue_add(event, roba_kp_left_alt, false, wait_ms);
+        roba_alt_tab_active = false;
+    }
+}
+
+static void roba_invoke_alt_tab_gesture(struct zmk_behavior_binding_event *event,
+                                        int idx, int32_t tap_ms, int32_t wait_ms) {
+    switch (idx) {
+    case 0: // Right: next app
+    case 2: // Up: start Alt+Tab / next app
+        roba_alt_tab_press_alt_if_needed(event, tap_ms);
+        roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
+        break;
+
+    case 1: // Left: previous app
+        roba_alt_tab_press_alt_if_needed(event, tap_ms);
+        zmk_behavior_queue_add(event, roba_kp_left_shift, true, tap_ms);
+        roba_tap_binding(event, roba_kp_tab, tap_ms, wait_ms);
+        zmk_behavior_queue_add(event, roba_kp_left_shift, false, wait_ms);
+        break;
+
+    case 3: // Down: release Alt and confirm selection
+        roba_alt_tab_release_alt_if_needed(event, wait_ms);
+        break;
+    }
+}
+
 int ball_action_idx = -1;
 static enum pixart_input_mode get_input_mode_for_current_layer(const struct device *dev) {
     const struct pixart_config *config = dev->config;
@@ -774,8 +849,18 @@ static int pmw3610_report_data(const struct device *dev) {
                 }
 
                 if(idx != -1) {
-                    zmk_behavior_queue_add(&event, action_cfg.bindings[idx], true, action_cfg.tap_ms);
-                    zmk_behavior_queue_add(&event, action_cfg.bindings[idx], false, action_cfg.wait_ms);
+                    if (zmk_keymap_highest_layer_active() == ROBA_ALT_TAB_LAYER) {
+                        roba_invoke_alt_tab_gesture(&event, idx, action_cfg.tap_ms, action_cfg.wait_ms);
+                    } else {
+                        /*
+                         * Safety: if the layer was changed while Alt-Tab was active,
+                         * release Alt before running any other ball action.
+                         */
+                        roba_alt_tab_release_alt_if_needed(&event, action_cfg.wait_ms);
+
+                        zmk_behavior_queue_add(&event, action_cfg.bindings[idx], true, action_cfg.tap_ms);
+                        zmk_behavior_queue_add(&event, action_cfg.bindings[idx], false, action_cfg.wait_ms);
+                    }
 
                     data->ball_action_delta_x = 0;
                     data->ball_action_delta_y = 0;
