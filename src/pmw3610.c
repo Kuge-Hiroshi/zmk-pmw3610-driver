@@ -585,7 +585,7 @@ K_TIMER_DEFINE(automouse_layer_timer, deactivate_automouse_layer, NULL);
  *   Left:       open task switcher, then move to previous item
  *   Down:       Enter, confirm selected item
  */
-#define ROBA_ALT_TAB_LAYER 9
+#define ROBA_ALT_TAB_LAYER -1
 
 static bool roba_task_switcher_active = false;
 
